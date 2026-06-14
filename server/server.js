@@ -18,7 +18,7 @@ let state = {
     customer: 1000.00,
     merchant: 0.00,
     gateway_fees: 0.00,
-    bank_reserve: 1000000.00 // The bank has unlimited virtual reserves
+    bank_reserve: 999000.00 // Total bank capitalization of $1,000,000.00 minus initial customer provision
   },
   
   // Detailed ledger entries (Double-entry format)
@@ -88,7 +88,7 @@ function resetState() {
     customer: 1000.00,
     merchant: 0.00,
     gateway_fees: 0.00,
-    bank_reserve: 1000000.00
+    bank_reserve: 999000.00
   };
   state.ledger = [
     {
@@ -124,8 +124,15 @@ function resetState() {
 // ==========================================
 // Ledger balance helper
 function getAccountBalance(accountName) {
-  // Balance = Total Credits (money in) - Total Debits (money out)
-  let balance = 0;
+  // Balance = Initial balance + Total Credits (money in) - Total Debits (money out)
+  const initialBalances = {
+    customer: 0.00,
+    merchant: 0.00,
+    gateway_fees: 0.00,
+    bank_reserve: 1000000.00
+  };
+  
+  let balance = initialBalances[accountName] || 0.00;
   for (const entry of state.ledger) {
     if (entry.creditAccount === accountName) {
       balance += entry.amount;

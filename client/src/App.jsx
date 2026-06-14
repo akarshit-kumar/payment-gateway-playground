@@ -613,7 +613,7 @@ function App() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
             
             {/* Visual Flow diagram */}
-            <div className="glass-panel" style={{ flex: 1, minHeight: '380px' }}>
+            <div className="glass-panel" style={{ minHeight: '340px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', borderBottom: '1px solid var(--glass-border)', paddingBottom: '0.5rem' }}>
                 <h3>Transaction Pipeline Visualizer</h3>
                 <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Status: {isSubmitting ? 'Processing request' : 'Idle'}</span>
@@ -672,27 +672,67 @@ function App() {
               </div>
             </div>
 
-            {/* Log terminal */}
-            <div className="terminal-log" ref={terminalRef} onScroll={handleTerminalScroll}>
-              <div className="terminal-header">
-                <span>GATEWAY SYSTEM TRACE OUTPUT</span>
-                <span>LIVE FEED</span>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
-                {backendState.logs.length === 0 ? (
-                  <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', textAlign: 'center', marginTop: '2rem' }}>
-                    No system operations logged. Submit a transaction or reset state to begin.
+            {/* Log terminal wrapper */}
+            <div style={{ position: 'relative' }}>
+              <div className="terminal-log" ref={terminalRef} onScroll={handleTerminalScroll}>
+                <div className="terminal-header">
+                  <span>GATEWAY SYSTEM TRACE OUTPUT</span>
+                  <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                    <button 
+                      type="button"
+                      onClick={() => setAutoScroll(!autoScroll)}
+                      style={{ 
+                        background: 'rgba(255,255,255,0.05)', 
+                        border: `1px solid ${autoScroll ? 'rgba(0, 247, 255, 0.3)' : 'rgba(255,255,255,0.1)'}`, 
+                        color: autoScroll ? 'hsl(var(--accent-cyan))' : 'var(--text-secondary)',
+                        fontSize: '0.7rem', 
+                        padding: '0.15rem 0.5rem', 
+                        borderRadius: '4px', 
+                        cursor: 'pointer',
+                        transition: 'var(--transition-smooth)'
+                      }}
+                    >
+                      Auto-Scroll: {autoScroll ? 'ON' : 'OFF'}
+                    </button>
+                    <span>LIVE FEED</span>
                   </div>
-                ) : (
-                  backendState.logs.slice().reverse().map((log) => (
-                    <div key={log.id} className={`log-entry ${log.source}`}>
-                      <span className="timestamp">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                      <span className="source">[{log.source}]</span>
-                      <span className="message">{log.message}</span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                  {backendState.logs.length === 0 ? (
+                    <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', textAlign: 'center', marginTop: '2rem' }}>
+                      No system operations logged. Submit a transaction or reset state to begin.
                     </div>
-                  ))
-                )}
+                  ) : (
+                    backendState.logs.slice().reverse().map((log) => (
+                      <div key={log.id} className={`log-entry ${log.source}`}>
+                        <span className="timestamp">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                        <span className="source">[{log.source}]</span>
+                        <span className="message">{log.message}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
+
+              {/* Floating Scroll to Bottom Button */}
+              {!autoScroll && backendState.logs.length > 0 && (
+                <button
+                  type="button"
+                  className="btn-scroll-bottom"
+                  onClick={() => {
+                    setAutoScroll(true);
+                    if (terminalRef.current) {
+                      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+                    }
+                  }}
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '0.2rem' }}>
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <polyline points="19 12 12 19 5 12"></polyline>
+                  </svg>
+                  Scroll to Bottom
+                </button>
+              )}
             </div>
           </div>
 
