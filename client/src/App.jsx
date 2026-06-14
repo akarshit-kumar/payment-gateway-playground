@@ -91,6 +91,7 @@ function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const terminalRef = useRef(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [currentTxId, setCurrentTxId] = useState(null);
 
   // Generate a new idempotency key
   const generateNewKey = () => {
@@ -130,6 +131,52 @@ function App() {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
   }, [backendState.logs, autoScroll]);
+
+  // Synchronize visualizer nodes with actual transaction state in the backend database
+  useEffect(() => {
+    if (!currentTxId) return;
+    
+    const tx = backendState.transactions[currentTxId];
+    if (!tx) return;
+    
+    if (tx.status === 'succeeded') {
+      setPipelineState({
+        connectorWidth: 100,
+        nodes: {
+          checkout: 'completed',
+          idempotency: useIdempotency ? 'completed' : 'warning',
+          hold: 'completed',
+          bank: 'completed',
+          settlement: 'completed',
+          webhook: 'completed'
+        }
+      });
+    } else if (tx.status === 'failed') {
+      setPipelineState({
+        connectorWidth: 80,
+        nodes: {
+          checkout: 'completed',
+          idempotency: useIdempotency ? 'completed' : 'warning',
+          hold: 'completed',
+          bank: 'failed',
+          settlement: 'completed',
+          webhook: 'completed'
+        }
+      });
+    } else if (tx.status === 'pending_reconciliation') {
+      setPipelineState({
+        connectorWidth: 60,
+        nodes: {
+          checkout: 'completed',
+          idempotency: useIdempotency ? 'completed' : 'warning',
+          hold: 'completed',
+          bank: 'warning',
+          settlement: 'warning',
+          webhook: 'idle'
+        }
+      });
+    }
+  }, [backendState.transactions, currentTxId, useIdempotency]);
 
   // Track user scroll position in terminal
   const handleTerminalScroll = (e) => {
@@ -203,6 +250,10 @@ function App() {
 
       const data = await response.json();
       const status = response.status;
+
+      if (data.transactionId) {
+        setCurrentTxId(data.transactionId);
+      }
 
       // Make sure we keep the animation realistic by reflecting actual response timing
       const elapsedTime = Date.now() - startCallTime;
@@ -333,6 +384,7 @@ function App() {
           fetchState();
           generateNewKey();
           setTxResult(null);
+          setCurrentTxId(null);
           setPipelineState({
             connectorWidth: 0,
             nodes: {
