@@ -90,6 +90,7 @@ function App() {
   const [txResult, setTxResult] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const terminalRef = useRef(null);
+  const [autoScroll, setAutoScroll] = useState(true);
 
   // Generate a new idempotency key
   const generateNewKey = () => {
@@ -123,18 +124,27 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Scroll logs terminal to bottom when new logs arrive
+  // Scroll logs terminal to bottom when new logs arrive (only if autoScroll is enabled)
   useEffect(() => {
-    if (terminalRef.current) {
+    if (terminalRef.current && autoScroll) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
-  }, [backendState.logs]);
+  }, [backendState.logs, autoScroll]);
+
+  // Track user scroll position in terminal
+  const handleTerminalScroll = (e) => {
+    const container = e.target;
+    // Check if the user is scrolled near the bottom (within 20px)
+    const isAtBottom = container.scrollHeight - container.clientHeight - container.scrollTop < 20;
+    setAutoScroll(isAtBottom);
+  };
 
   // Handle transaction submit
   const handlePaymentSubmit = async (e) => {
     e.preventDefault();
     if (isSubmitting) return;
 
+    setAutoScroll(true);
     setIsSubmitting(true);
     setTxResult(null);
 
@@ -611,7 +621,7 @@ function App() {
             </div>
 
             {/* Log terminal */}
-            <div className="terminal-log" ref={terminalRef}>
+            <div className="terminal-log" ref={terminalRef} onScroll={handleTerminalScroll}>
               <div className="terminal-header">
                 <span>GATEWAY SYSTEM TRACE OUTPUT</span>
                 <span>LIVE FEED</span>
@@ -622,7 +632,7 @@ function App() {
                     No system operations logged. Submit a transaction or reset state to begin.
                   </div>
                 ) : (
-                  backendState.logs.map((log) => (
+                  backendState.logs.slice().reverse().map((log) => (
                     <div key={log.id} className={`log-entry ${log.source}`}>
                       <span className="timestamp">{new Date(log.timestamp).toLocaleTimeString()}</span>
                       <span className="source">[{log.source}]</span>
