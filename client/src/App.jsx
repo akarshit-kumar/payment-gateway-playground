@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
 
 // ==========================================
 // INLINE SVGS FOR ICONS
@@ -108,7 +110,7 @@ function CheckoutForm({ amount, isSubmitting, setIsSubmitting, useIdempotency, c
         headers['x-idempotency-key'] = ik;
       }
 
-      const response = await fetch('http://localhost:3000/api/gateway/create-payment-intent', {
+      const response = await fetch(`${API_URL}/api/gateway/create-payment-intent`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ amount: parseFloat(amount) })
@@ -268,7 +270,7 @@ function App() {
 
   const fetchSettings = async () => {
     try {
-      const res = await fetch('http://localhost:3000/api/settings');
+      const res = await fetch(`${API_URL}/api/settings`);
       if (res.ok) {
         const data = await res.json();
         setSettings(data);
@@ -296,7 +298,7 @@ function App() {
   const handleSaveSettings = async (e) => {
     e.preventDefault();
     try {
-      const res = await fetch('http://localhost:3000/api/settings', {
+      const res = await fetch(`${API_URL}/api/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -357,7 +359,7 @@ function App() {
   // Fetch current backend state
   const fetchState = async () => {
     try {
-      const res = await fetch('http://localhost:3000/api/state');
+      const res = await fetch(`${API_URL}/api/state`);
       if (res.ok) {
         const data = await res.json();
         setBackendState(data);
@@ -488,7 +490,7 @@ function App() {
         headers['x-idempotency-key'] = ik;
       }
 
-      const response = await fetch('http://localhost:3000/api/gateway/charge', {
+      const response = await fetch(`${API_URL}/api/gateway/charge`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -609,7 +611,7 @@ function App() {
   // Run manual reconciliation
   const runReconciliation = async () => {
     try {
-      const res = await fetch('http://localhost:3000/api/gateway/reconcile', {
+      const res = await fetch(`${API_URL}/api/gateway/reconcile`, {
         method: 'POST'
       });
       if (res.ok) {
@@ -626,7 +628,7 @@ function App() {
   const resetSimulator = async () => {
     if (window.confirm('Are you sure you want to clear all history, ledger journals, and reset accounts to $1,000.00?')) {
       try {
-        const res = await fetch('http://localhost:3000/api/state/reset', {
+        const res = await fetch(`${API_URL}/api/state/reset`, {
           method: 'POST'
         });
         if (res.ok) {
@@ -659,7 +661,7 @@ function App() {
       if (mode === 'latency') body.latency = val;
       if (mode === 'errorMode') body.errorMode = val;
 
-      await fetch('http://localhost:3000/api/bank/settings', {
+      await fetch(`${API_URL}/api/bank/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -673,7 +675,7 @@ function App() {
   // Update Merchant settings on changes
   const updateMerchantSettings = async (webhookStatus) => {
     try {
-      await fetch('http://localhost:3000/api/merchant/settings', {
+      await fetch(`${API_URL}/api/merchant/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: webhookStatus })
