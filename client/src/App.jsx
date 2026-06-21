@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { loadStripe } from '@stripe/stripe-js';
+import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
+
 
 // ==========================================
 // INLINE SVGS FOR ICONS
@@ -52,6 +55,180 @@ const TrashIcon = () => (
   </svg>
 );
 
+function CheckoutForm({ amount, isSubmitting, setIsSubmitting, useIdempotency, customIdempotencyKey, generateNewKey, setTxResult, setCurrentTxId, setPipelineState, fetchState }) {
+  const stripe = useStripe();
+  const elements = useElements();
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!stripe || !elements || isSubmitting) return;
+
+    setIsSubmitting(true);
+    setTxResult(null);
+
+    // Initial visual setup for pipeline
+    setPipelineState({
+      connectorWidth: 0,
+      nodes: {
+        checkout: 'active',
+        idempotency: 'idle',
+        hold: 'idle',
+        bank: 'idle',
+        settlement: 'idle',
+        webhook: 'idle'
+      }
+    });
+
+    // 1. Checkout Phase
+    await new Promise(r => setTimeout(r, 450));
+    setPipelineState(prev => ({
+      connectorWidth: 20,
+      nodes: { ...prev.nodes, checkout: 'completed', idempotency: 'active' }
+    }));
+
+    // 2. Idempotency Key validation check
+    await new Promise(r => setTimeout(r, 450));
+    const ik = useIdempotency ? customIdempotencyKey : null;
+
+    setPipelineState(prev => ({
+      connectorWidth: 40,
+      nodes: { ...prev.nodes, idempotency: ik ? 'completed' : 'warning', hold: 'active' }
+    }));
+
+    // 3. Create PaymentIntent on server
+    await new Promise(r => setTimeout(r, 450));
+    setPipelineState(prev => ({
+      connectorWidth: 60,
+      nodes: { ...prev.nodes, hold: 'completed', bank: 'active' }
+    }));
+
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (ik) {
+        headers['x-idempotency-key'] = ik;
+      }
+
+      const response = await fetch('http://localhost:3000/api/gateway/create-payment-intent', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ amount: parseFloat(amount) })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to create PaymentIntent');
+      }
+
+      if (data.transactionId) {
+        setCurrentTxId(data.transactionId);
+      }
+
+      // 4. Confirm Card Payment via Stripe SDK
+      const cardElement = elements.getElement(CardElement);
+      const confirmResult = await stripe.confirmCardPayment(data.clientSecret, {
+        payment_method: {
+          card: cardElement
+        }
+      });
+
+      if (confirmResult.error) {
+        // Payment failed or was declined by card brand/issuer
+        setPipelineState(prev => ({
+          connectorWidth: 60,
+          nodes: { ...prev.nodes, bank: 'failed', settlement: 'warning' }
+        }));
+        setTxResult({
+          success: false,
+          error: true,
+          message: confirmResult.error.message,
+          code: confirmResult.error.code
+        });
+      } else {
+        // Stripe successfully processed
+        const paymentIntent = confirmResult.paymentIntent;
+        if (paymentIntent.status === 'succeeded') {
+          setPipelineState(prev => ({
+            connectorWidth: 80,
+            nodes: { ...prev.nodes, bank: 'completed', settlement: 'active' }
+          }));
+          
+          await new Promise(r => setTimeout(r, 500));
+          setPipelineState(prev => ({
+            connectorWidth: 100,
+            nodes: { ...prev.nodes, settlement: 'completed', webhook: 'active' }
+          }));
+          
+          await new Promise(r => setTimeout(r, 500));
+          setPipelineState(prev => ({
+            ...prev,
+            nodes: { ...prev.nodes, webhook: 'completed' }
+          }));
+
+          setTxResult({
+            success: true,
+            message: `Charged $${parseFloat(amount).toFixed(2)} successfully via Stripe! (ID: ${paymentIntent.id})`,
+            data: paymentIntent
+          });
+
+          if (useIdempotency) generateNewKey();
+        } else {
+          setTxResult({
+            success: false,
+            message: `Payment status: ${paymentIntent.status}`,
+            code: 'INCOMPLETE'
+          });
+        }
+      }
+    } catch (err) {
+      setPipelineState(prev => ({
+        connectorWidth: 60,
+        nodes: { ...prev.nodes, bank: 'failed', settlement: 'warning' }
+      }));
+      setTxResult({
+        success: false,
+        error: true,
+        message: err.message || 'Payment execution failed.',
+        code: 'STRIPE_ERROR'
+      });
+    } finally {
+      setIsSubmitting(false);
+      fetchState(); // Immediately update account balances
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <div className="form-group" style={{ marginBottom: '1.25rem' }}>
+        <label>Secure Card Payment (Stripe Elements)</label>
+        <div className="stripe-card-element-wrapper">
+          <CardElement options={{
+            style: {
+              base: {
+                color: '#ffffff',
+                fontFamily: '"Outfit", "Inter", sans-serif',
+                fontSize: '15px',
+                fontSmoothing: 'antialiased',
+                '::placeholder': {
+                  color: 'rgba(255, 255, 255, 0.4)'
+                }
+              },
+              invalid: {
+                color: '#ff3366',
+                iconColor: '#ff3366'
+              }
+            }
+          }} />
+        </div>
+      </div>
+      
+      <button type="submit" className="btn-primary" disabled={isSubmitting || !stripe}>
+        {isSubmitting ? 'Confirming Payment...' : `Pay $${parseFloat(amount || 0).toFixed(2)}`}
+      </button>
+    </form>
+  );
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [backendState, setBackendState] = useState({
@@ -73,6 +250,78 @@ function App() {
   const [cardNumber, setCardNumber] = useState('4111 1111 1111 1111');
   const [useIdempotency, setUseIdempotency] = useState(true);
   const [customIdempotencyKey, setCustomIdempotencyKey] = useState('');
+  
+  // Stripe Integration States
+  const [gatewayMode, setGatewayMode] = useState('simulated'); // 'simulated' or 'stripe'
+  const [settings, setSettings] = useState({
+    stripePublishableKey: '',
+    stripeSecretKey: '',
+    stripeWebhookSecret: '',
+    isStripeEnabled: false
+  });
+  
+  const [publishableKeyInput, setPublishableKeyInput] = useState('');
+  const [secretKeyInput, setSecretKeyInput] = useState('');
+  const [webhookSecretInput, setWebhookSecretInput] = useState('');
+  
+  const [stripePromise, setStripePromise] = useState(null);
+
+  const fetchSettings = async () => {
+    try {
+      const res = await fetch('http://localhost:3000/api/settings');
+      if (res.ok) {
+        const data = await res.json();
+        setSettings(data);
+        setPublishableKeyInput(data.stripePublishableKey || '');
+      }
+    } catch (err) {
+      console.error('Failed to fetch Stripe settings:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchSettings();
+  }, []);
+
+  useEffect(() => {
+    if (settings.stripePublishableKey) {
+      setStripePromise(loadStripe(settings.stripePublishableKey));
+      setGatewayMode('stripe');
+    } else {
+      setStripePromise(null);
+      setGatewayMode('simulated');
+    }
+  }, [settings.stripePublishableKey, settings.isStripeEnabled]);
+
+  const handleSaveSettings = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch('http://localhost:3000/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          publishableKey: publishableKeyInput,
+          secretKey: secretKeyInput,
+          webhookSecret: webhookSecretInput
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSettings({
+          stripePublishableKey: data.stripePublishableKey,
+          stripeSecretKey: secretKeyInput ? 'sk_test_••••' : settings.stripeSecretKey,
+          stripeWebhookSecret: webhookSecretInput ? 'whsec_••••' : settings.stripeWebhookSecret,
+          isStripeEnabled: data.isStripeEnabled
+        });
+        alert('Stripe settings updated and initialized successfully!');
+        setActiveTab('dashboard');
+      } else {
+        alert('Failed to update Stripe settings.');
+      }
+    } catch (err) {
+      alert('Network error updating Stripe settings.');
+    }
+  };
   
   // Frontend Visual pipeline status
   const [pipelineState, setPipelineState] = useState({
@@ -446,6 +695,7 @@ function App() {
           <button className={`tab-btn ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>Playground</button>
           <button className={`tab-btn ${activeTab === 'ledger' ? 'active' : ''}`} onClick={() => setActiveTab('ledger')}>Ledger Journal</button>
           <button className={`tab-btn ${activeTab === 'webhooks' ? 'active' : ''}`} onClick={() => setActiveTab('webhooks')}>Webhooks ({backendState.webhookLogs.length})</button>
+          <button className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>Stripe Settings</button>
           <button className={`tab-btn ${activeTab === 'learn' ? 'active' : ''}`} onClick={() => setActiveTab('learn')}>System Design Guide</button>
         </div>
         <button className="btn-reset" onClick={resetSimulator}>Reset State</button>
@@ -460,79 +710,115 @@ function App() {
             {/* Checkout simulation */}
             <div className="glass-panel">
               <h3 style={{ marginBottom: '1rem', borderBottom: '1px solid var(--glass-border)', paddingBottom: '0.5rem' }}>Checkout Simulator</h3>
-              <form onSubmit={handlePaymentSubmit}>
-                <div className="form-group">
-                  <label>Amount (USD)</label>
-                  <input 
-                    type="number" 
-                    step="0.01" 
-                    className="form-input" 
-                    value={amount} 
-                    onChange={(e) => setAmount(e.target.value)} 
-                    disabled={isSubmitting}
-                    required
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Cardholder Name</label>
-                  <input 
-                    type="text" 
-                    className="form-input" 
-                    value={cardHolder} 
-                    onChange={(e) => setCardHolder(e.target.value)} 
-                    disabled={isSubmitting}
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Card Number</label>
-                  <input 
-                    type="text" 
-                    className="form-input" 
-                    value={cardNumber} 
-                    onChange={(e) => setCardNumber(e.target.value)} 
-                    disabled={isSubmitting}
-                  />
-                </div>
-                
-                <div className="form-group" style={{ marginBottom: '0.5rem' }}>
-                  <label className="form-checkbox">
-                    <input 
-                      type="checkbox" 
-                      checked={useIdempotency} 
-                      onChange={(e) => setUseIdempotency(e.target.checked)}
-                      disabled={isSubmitting}
-                    />
-                    Use Idempotency Key
-                  </label>
-                </div>
+              <div className="form-group">
+                <label>Amount (USD)</label>
+                <input 
+                  type="number" 
+                  step="0.01" 
+                  className="form-input" 
+                  value={amount} 
+                  onChange={(e) => setAmount(e.target.value)} 
+                  disabled={isSubmitting}
+                  required
+                />
+              </div>
 
-                {useIdempotency && (
+              <div className="form-group" style={{ marginBottom: '1.25rem' }}>
+                <label>Gateway Provider</label>
+                <select 
+                  className="form-select" 
+                  value={gatewayMode} 
+                  onChange={(e) => {
+                    if (e.target.value === 'stripe' && !settings.isStripeEnabled) {
+                      alert('Stripe is not configured. Please enter API keys in the Stripe Settings tab.');
+                      return;
+                    }
+                    setGatewayMode(e.target.value);
+                  }}
+                  disabled={isSubmitting}
+                >
+                  <option value="simulated">Simulated Sandbox (Offline)</option>
+                  <option value="stripe">Stripe Integration (Real Test Mode)</option>
+                </select>
+              </div>
+
+              <div className="form-group" style={{ marginBottom: '0.5rem' }}>
+                <label className="form-checkbox">
+                  <input 
+                    type="checkbox" 
+                    checked={useIdempotency} 
+                    onChange={(e) => setUseIdempotency(e.target.checked)}
+                    disabled={isSubmitting}
+                  />
+                  Use Idempotency Key
+                </label>
+              </div>
+
+              {useIdempotency && (
+                <div className="form-group">
+                  <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    Idempotency Key
+                    <button 
+                      type="button" 
+                      onClick={generateNewKey} 
+                      style={{ background: 'none', border: 'none', color: 'hsl(var(--accent-cyan))', fontSize: '0.75rem', cursor: 'pointer' }}
+                      disabled={isSubmitting}
+                    >
+                      Regenerate
+                    </button>
+                  </label>
+                  <input 
+                    type="text" 
+                    className="form-input mono-font" 
+                    value={customIdempotencyKey} 
+                    onChange={(e) => setCustomIdempotencyKey(e.target.value)}
+                    disabled={isSubmitting}
+                  />
+                </div>
+              )}
+
+              {gatewayMode === 'stripe' && stripePromise ? (
+                <Elements stripe={stripePromise} key={settings.stripePublishableKey}>
+                  <CheckoutForm 
+                    amount={amount}
+                    isSubmitting={isSubmitting}
+                    setIsSubmitting={setIsSubmitting}
+                    useIdempotency={useIdempotency}
+                    customIdempotencyKey={customIdempotencyKey}
+                    generateNewKey={generateNewKey}
+                    setTxResult={setTxResult}
+                    setCurrentTxId={setCurrentTxId}
+                    setPipelineState={setPipelineState}
+                    fetchState={fetchState}
+                  />
+                </Elements>
+              ) : (
+                <form onSubmit={handlePaymentSubmit}>
                   <div className="form-group">
-                    <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      Idempotency Key
-                      <button 
-                        type="button" 
-                        onClick={generateNewKey} 
-                        style={{ background: 'none', border: 'none', color: 'hsl(var(--accent-cyan))', fontSize: '0.75rem', cursor: 'pointer' }}
-                        disabled={isSubmitting}
-                      >
-                        Regenerate
-                      </button>
-                    </label>
+                    <label>Cardholder Name</label>
                     <input 
                       type="text" 
-                      className="form-input mono-font" 
-                      value={customIdempotencyKey} 
-                      onChange={(e) => setCustomIdempotencyKey(e.target.value)}
+                      className="form-input" 
+                      value={cardHolder} 
+                      onChange={(e) => setCardHolder(e.target.value)} 
                       disabled={isSubmitting}
                     />
                   </div>
-                )}
-
-                <button type="submit" className="btn-primary" disabled={isSubmitting}>
-                  {isSubmitting ? 'Processing Payment...' : `Pay $${parseFloat(amount || 0).toFixed(2)}`}
-                </button>
-              </form>
+                  <div className="form-group">
+                    <label>Card Number</label>
+                    <input 
+                      type="text" 
+                      className="form-input" 
+                      value={cardNumber} 
+                      onChange={(e) => setCardNumber(e.target.value)} 
+                      disabled={isSubmitting}
+                    />
+                  </div>
+                  <button type="submit" className="btn-primary" disabled={isSubmitting}>
+                    {isSubmitting ? 'Processing Payment...' : `Pay $${parseFloat(amount || 0).toFixed(2)}`}
+                  </button>
+                </form>
+              )}
 
               {txResult && (
                 <div style={{ 
@@ -903,6 +1189,91 @@ function App() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* STRIPE SETTINGS TAB */}
+      {activeTab === 'settings' && (
+        <div className="glass-panel" style={{ maxWidth: '650px', margin: '1.5rem auto', padding: '2rem' }}>
+          <h2 style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ color: 'hsl(var(--accent-cyan))' }}>Stripe API Integration Settings</span>
+          </h2>
+          <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '0.9rem', lineHeight: '1.5' }}>
+            Configure your Stripe developer credentials. Saving these keys will write them to a local <code>.env</code> file in the backend server directory, initializing a live Stripe connection.
+          </p>
+
+          <form onSubmit={handleSaveSettings} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            <div className="form-group">
+              <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>Stripe Publishable Key (Test Mode)</label>
+              <input 
+                type="text" 
+                className="form-input mono-font" 
+                placeholder="pk_test_..." 
+                value={publishableKeyInput} 
+                onChange={(e) => setPublishableKeyInput(e.target.value)}
+                required
+              />
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem', display: 'block' }}>
+                Used by React Stripe Elements to tokenize card details securely on the client.
+              </span>
+            </div>
+
+            <div className="form-group">
+              <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>Stripe Secret Key (Test Mode)</label>
+              <input 
+                type="password" 
+                className="form-input mono-font" 
+                placeholder={settings.stripeSecretKey ? "••••••••••••••••" : "sk_test_..."}
+                value={secretKeyInput} 
+                onChange={(e) => setSecretKeyInput(e.target.value)}
+              />
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem', display: 'block' }}>
+                Used by Express to create PaymentIntents. {settings.isStripeEnabled ? <strong style={{ color: '#00e676' }}>✓ Currently configured</strong> : <strong style={{ color: '#ff3366' }}>✗ Not configured</strong>}
+              </span>
+            </div>
+
+            <div className="form-group">
+              <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>Stripe Webhook Signing Secret (Optional)</label>
+              <input 
+                type="password" 
+                className="form-input mono-font" 
+                placeholder={settings.stripeWebhookSecret ? "••••••••••••••••" : "whsec_..."}
+                value={webhookSecretInput} 
+                onChange={(e) => setWebhookSecretInput(e.target.value)}
+              />
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem', display: 'block' }}>
+                Used to verify signature headers sent by Stripe on incoming webhook requests.
+              </span>
+            </div>
+            
+            <button type="submit" className="btn-primary" style={{ marginTop: '0.75rem', alignSelf: 'flex-start' }}>
+              Save Settings &amp; Connect
+            </button>
+          </form>
+          
+          <div style={{ marginTop: '2rem', padding: '1.25rem', borderRadius: '8px', border: '1px dashed var(--glass-border)', backgroundColor: 'rgba(255,255,255,0.02)' }}>
+            <h4 style={{ color: 'hsl(var(--accent-cyan))', marginBottom: '0.5rem', fontWeight: 600 }}>Stripe Local Testing Workflow</h4>
+            <ol style={{ paddingLeft: '1.25rem', fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.5rem', lineHeight: '1.5' }}>
+              <li>
+                Sign in to the <a href="https://dashboard.stripe.com" target="_blank" rel="noopener noreferrer" style={{ color: 'hsl(var(--accent-cyan))', textDecoration: 'underline' }}>Stripe Dashboard</a> and toggle **Developer Test Mode**.
+              </li>
+              <li>
+                Retrieve your **Publishable key** and **Secret key** from the **API keys** tab, and enter them above.
+              </li>
+              <li>
+                Install the <a href="https://stripe.com/docs/stripe-cli" target="_blank" rel="noopener noreferrer" style={{ color: 'hsl(var(--accent-cyan))', textDecoration: 'underline' }}>Stripe CLI</a> to test webhooks locally.
+              </li>
+              <li>
+                Authenticate the CLI and run this command to start forwarding events to your local server:
+                <pre style={{ background: 'rgba(0,0,0,0.3)', padding: '0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', overflowX: 'auto', margin: '0.5rem 0' }}>
+                  stripe listen --forward-to localhost:3000/api/webhook
+                </pre>
+              </li>
+              <li>
+                Copy the printed **webhook signing secret** (starting with `whsec_`) and paste it in the webhook secret field above to verify webhook integrity!
+              </li>
+            </ol>
           </div>
         </div>
       )}

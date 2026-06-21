@@ -1,12 +1,25 @@
 import express from 'express';
 import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
+import dotenv from 'dotenv';
+import Stripe from 'stripe';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());
+
+// Initialize Stripe if secret key is present in env
+let stripeInstance = null;
+if (process.env.STRIPE_SECRET_KEY) {
+  stripeInstance = new Stripe(process.env.STRIPE_SECRET_KEY);
+}
+
 
 // ==========================================
 // IN-MEMORY DATABASE & STATE
@@ -455,6 +468,204 @@ async function processPayment(req, res, idempotencyKey) {
 // ==========================================
 // API ROUTING
 // ==========================================
+
+// Webhook route must be registered BEFORE express.json() is applied
+app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  
+  let event;
+  
+  if (!stripeInstance) {
+    logSystemEvent('WEBHOOK', 'Warning: Received webhook but Stripe is not initialized.');
+    return res.status(400).send('Stripe not initialized');
+  }
+
+  try {
+    if (endpointSecret) {
+      event = stripeInstance.webhooks.constructEvent(req.body, sig, endpointSecret);
+    } else {
+      event = JSON.parse(req.body.toString());
+      logSystemEvent('WEBHOOK', 'Webhook received without signature verification (no webhook secret set).');
+    }
+  } catch (err) {
+    logSystemEvent('WEBHOOK', `Webhook error: ${err.message}`);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  logSystemEvent('WEBHOOK', `Stripe Webhook event received: ${event.type}`, { eventId: event.id });
+
+  // Handle the event
+  switch (event.type) {
+    case 'payment_intent.succeeded': {
+      const paymentIntent = event.data.object;
+      const txId = paymentIntent.id;
+      const amount = paymentIntent.amount / 100;
+      
+      logSystemEvent('WEBHOOK', `PaymentIntent succeeded: ${txId} for $${amount.toFixed(2)}`);
+      
+      // Update transaction state
+      if (state.transactions[txId]) {
+        const tx = state.transactions[txId];
+        tx.status = 'succeeded';
+        tx.bankResponse = paymentIntent;
+        
+        // Ledger entry transfers
+        const gatewayFee = parseFloat((amount * 0.02).toFixed(2)); // 2% gateway fee
+        const merchantSettlement = parseFloat((amount - gatewayFee).toFixed(2));
+        
+        writeLedgerEntry('bank_reserve', 'merchant', merchantSettlement, `Stripe Settlement for transaction: ${txId}`);
+        writeLedgerEntry('bank_reserve', 'gateway_fees', gatewayFee, `Stripe Fee share for transaction: ${txId}`);
+        
+        enqueueWebhook(txId, 'succeeded');
+      } else {
+        // Create transactional state on the fly if it doesn't exist
+        state.transactions[txId] = {
+          id: txId,
+          amount,
+          status: 'succeeded',
+          timestamp: new Date().toISOString(),
+          bankResponse: paymentIntent
+        };
+        // Ledger entries
+        writeLedgerEntry('customer', 'bank_reserve', amount, `Stripe hold funds (PaymentIntent succeeded: ${txId})`);
+        const gatewayFee = parseFloat((amount * 0.02).toFixed(2));
+        const merchantSettlement = parseFloat((amount - gatewayFee).toFixed(2));
+        writeLedgerEntry('bank_reserve', 'merchant', merchantSettlement, `Stripe Settlement for transaction: ${txId}`);
+        writeLedgerEntry('bank_reserve', 'gateway_fees', gatewayFee, `Stripe Fee share for transaction: ${txId}`);
+      }
+      break;
+    }
+    case 'payment_intent.payment_failed': {
+      const paymentIntent = event.data.object;
+      const txId = paymentIntent.id;
+      const amount = paymentIntent.amount / 100;
+      
+      logSystemEvent('WEBHOOK', `PaymentIntent failed: ${txId}. Reason: ${paymentIntent.last_payment_error?.message || 'unknown'}`);
+      
+      if (state.transactions[txId]) {
+        const tx = state.transactions[txId];
+        tx.status = 'failed';
+        tx.bankResponse = paymentIntent;
+        
+        // Release Hold: Refund customer
+        writeLedgerEntry('bank_reserve', 'customer', amount, `Stripe Release hold (failed tx: ${txId})`);
+        enqueueWebhook(txId, 'failed');
+      }
+      break;
+    }
+    default:
+      logSystemEvent('WEBHOOK', `Unhandled Stripe event type ${event.type}`);
+  }
+
+  res.json({ received: true });
+});
+
+// Apply JSON parsing middleware to all subsequent routes
+app.use(express.json());
+
+// Get Stripe & application settings
+app.get('/api/settings', (req, res) => {
+  res.json({
+    stripePublishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
+    stripeSecretKey: process.env.STRIPE_SECRET_KEY ? 'sk_test_••••' + process.env.STRIPE_SECRET_KEY.slice(-4) : '',
+    stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET ? 'whsec_••••' + process.env.STRIPE_WEBHOOK_SECRET.slice(-4) : '',
+    isStripeEnabled: !!stripeInstance
+  });
+});
+
+// Update Stripe settings
+app.post('/api/settings', (req, res) => {
+  const { publishableKey, secretKey, webhookSecret } = req.body;
+  
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const envPath = path.join(__dirname, '.env');
+  
+  let envContent = '';
+  if (publishableKey) envContent += `STRIPE_PUBLISHABLE_KEY=${publishableKey}\n`;
+  if (secretKey) envContent += `STRIPE_SECRET_KEY=${secretKey}\n`;
+  if (webhookSecret) envContent += `STRIPE_WEBHOOK_SECRET=${webhookSecret}\n`;
+  
+  try {
+    fs.writeFileSync(envPath, envContent);
+    
+    // Reload env variables
+    dotenv.config({ path: envPath, override: true });
+    
+    // Re-initialize Stripe client
+    if (process.env.STRIPE_SECRET_KEY) {
+      stripeInstance = new Stripe(process.env.STRIPE_SECRET_KEY);
+      logSystemEvent('SYSTEM', 'Stripe client initialized successfully.');
+    } else {
+      stripeInstance = null;
+      logSystemEvent('SYSTEM', 'Stripe client cleared.');
+    }
+    
+    res.json({
+      success: true,
+      stripePublishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
+      isStripeEnabled: !!stripeInstance
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Create Stripe PaymentIntent
+app.post('/api/gateway/create-payment-intent', async (req, res) => {
+  const { amount } = req.body;
+  const idempotencyKey = req.headers['x-idempotency-key'];
+  
+  if (!stripeInstance) {
+    return res.status(400).json({ error: 'Stripe is not configured. Please set API keys in Settings.', code: 'STRIPE_NOT_CONFIGURED' });
+  }
+  
+  if (!amount || amount <= 0) {
+    return res.status(400).json({ error: 'Invalid amount', code: 'INVALID_AMOUNT' });
+  }
+  
+  try {
+    logSystemEvent('GATEWAY', `Stripe PaymentIntent request received for $${parseFloat(amount).toFixed(2)}`, { idempotencyKey });
+    
+    // Create PaymentIntent in Stripe
+    const paymentIntentOptions = {
+      amount: Math.round(parseFloat(amount) * 100), // in cents
+      currency: 'usd',
+      metadata: { idempotencyKey }
+    };
+    
+    const requestOptions = {};
+    if (idempotencyKey) {
+      requestOptions.idempotencyKey = idempotencyKey;
+    }
+    
+    const paymentIntent = await stripeInstance.paymentIntents.create(paymentIntentOptions, requestOptions);
+    
+    // Create transaction in state
+    state.transactions[paymentIntent.id] = {
+      id: paymentIntent.id,
+      amount: parseFloat(amount),
+      status: 'pending',
+      idempotencyKey,
+      timestamp: new Date().toISOString(),
+      bankResponse: null
+    };
+    
+    // Create Ledger Hold entry (source: customer, destination: bank_reserve)
+    writeLedgerEntry('customer', 'bank_reserve', parseFloat(amount), `Stripe hold funds (PaymentIntent created: ${paymentIntent.id})`);
+    
+    logSystemEvent('GATEWAY', `Stripe PaymentIntent created: ${paymentIntent.id}. Client secret returned.`);
+    
+    res.json({
+      clientSecret: paymentIntent.client_secret,
+      transactionId: paymentIntent.id
+    });
+  } catch (error) {
+    logSystemEvent('SYSTEM', `Stripe error during PaymentIntent creation: ${error.message}`);
+    res.status(500).json({ error: error.message, code: 'STRIPE_ERROR' });
+  }
+});
 
 // 1. Reset state
 app.post('/api/state/reset', (req, res) => {

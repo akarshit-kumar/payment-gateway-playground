@@ -771,3 +771,18 @@ header {
   box-shadow: 0 4px 15px rgba(0, 247, 255, 0.2);
   transform: translateY(-1px);
 }
+
+/* Stripe Elements Styling */
+.stripe-card-element-wrapper {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  transition: var(--transition-smooth);
+  box-sizing: border-box;
+}
+
+.stripe-card-element-wrapper:focus-within {
+  border-color: hsl(var(--accent-cyan));
+  box-shadow: 0 0 10px rgba(0, 247, 255, 0.15);
+}
