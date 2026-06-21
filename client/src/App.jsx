@@ -909,7 +909,7 @@ function App() {
 
               <div className="pipeline-visualizer">
                 <div className="pipeline-connector">
-                  <div className="pipeline-connector-progress" style={{ width: `${pipelineState.connectorWidth}%` }} />
+                  <div className="pipeline-connector-progress" style={{ '--progress': `${pipelineState.connectorWidth}%` }} />
                 </div>
                 
                 <div className="pipeline-nodes">

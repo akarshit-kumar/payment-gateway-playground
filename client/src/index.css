@@ -425,8 +425,8 @@ header {
 .pipeline-connector-progress {
   height: 100%;
   background: linear-gradient(90deg, hsl(var(--accent-cyan)) 0%, hsl(var(--accent-purple)) 50%, hsl(var(--accent-green)) 100%);
-  width: 0%;
-  transition: width 0.5s ease;
+  width: var(--progress, 0%);
+  transition: width 0.5s ease, height 0.5s ease;
   box-shadow: 0 0 8px rgba(0, 247, 255, 0.4);
 }
 
@@ -785,4 +785,110 @@ header {
 .stripe-card-element-wrapper:focus-within {
   border-color: hsl(var(--accent-cyan));
   box-shadow: 0 0 10px rgba(0, 247, 255, 0.15);
+}
+
+/* Responsive Overrides & Media Queries */
+
+@media (max-width: 1200px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .app-container {
+    padding: 1rem;
+    gap: 1rem;
+  }
+
+  header {
+    flex-direction: column;
+    gap: 1.25rem;
+    align-items: center;
+    text-align: center;
+    padding-bottom: 1.25rem;
+  }
+
+  .title-area h1 {
+    font-size: 1.5rem;
+  }
+
+  .nav-tabs {
+    flex-wrap: wrap;
+    justify-content: center;
+    width: 100%;
+    gap: 0.35rem;
+  }
+
+  .tab-btn {
+    padding: 0.5rem 0.85rem;
+    font-size: 0.85rem;
+    flex-grow: 1;
+    text-align: center;
+  }
+
+  .btn-reset {
+    width: 100%;
+    text-align: center;
+  }
+}
+
+@media (max-width: 640px) {
+  .glass-panel {
+    padding: 1.25rem;
+    border-radius: 12px;
+  }
+
+  .balances-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .terminal-log {
+    height: 450px;
+  }
+
+  /* Vertical Pipeline visualizer on mobile */
+  .pipeline-visualizer {
+    padding: 1.5rem 0.5rem;
+    align-items: flex-start;
+  }
+
+  .pipeline-connector {
+    left: 1.75rem;
+    top: 2rem;
+    bottom: 2rem;
+    width: 3px;
+    height: auto;
+    right: auto;
+  }
+
+  .pipeline-connector-progress {
+    width: 100% !important;
+    height: var(--progress, 0%);
+  }
+
+  .pipeline-nodes {
+    flex-direction: column;
+    gap: 1.5rem;
+    align-items: flex-start;
+  }
+
+  .pipeline-node {
+    flex-direction: row;
+    align-items: center;
+    gap: 1rem;
+    width: 100%;
+  }
+
+  .node-circle {
+    width: 3rem;
+    height: 3rem;
+    flex-shrink: 0;
+  }
+
+  .node-label {
+    font-size: 0.85rem;
+    text-align: left;
+    white-space: normal;
+  }
 }
